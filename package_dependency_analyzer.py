@@ -106,10 +106,10 @@ class PackageDependencyAnalyzer:
     
     def analysis(self, target: str, no_all: str = "yes") -> Dict[str, List[str]]:
         """分析依赖于指定target的软件包"""
-        print(f"INFO: Analyzing packages that depend on '{target}'...")
+        print(f"INFO: 分析依赖于 '{target}' 的软件包...")
         
         if no_all.lower() == "yes":
-            print("INFO: filter pure all packages")
+            print("INFO: 过滤纯all架构的软件包")
         
         packages = self._parse_sources_file()
         result_dict = {}
@@ -155,6 +155,28 @@ class PackageDependencyAnalyzer:
             'arch': pkg_info.get('Architecture', 'unknown'),
             'homepage': pkg_info.get('Homepage', '')
         }
+    
+    def get_binary_packages(self, source_package_name: str) -> List[str]:
+        """获取源码包产生的所有二进制包名"""
+        packages = self._parse_sources_file()
+        
+        if source_package_name not in packages:
+            return []
+        
+        pkg_info = packages[source_package_name]
+        binary_field = pkg_info.get('Binary', '')
+        
+        if not binary_field:
+            return []
+        
+        # 解析Binary字段，包名之间用逗号分隔
+        binary_packages = []
+        for pkg in binary_field.split(','):
+            pkg = pkg.strip()
+            if pkg:
+                binary_packages.append(pkg)
+        
+        return binary_packages
     
     def export_to_excel(self, comprehensive_result: Dict[str, Dict[str, str]], target_list: List[str]) -> str:
         """将comprehensive_result导出到Excel文件"""
@@ -211,7 +233,21 @@ class PackageDependencyAnalyzer:
         
         return filepath
     
-    def _find_all_dependencies(self, target: str, no_all: str, visited: set = None, depth: int = 0, max_depth: int = 10) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+    def get_source_package_from_binary(self, binary_package: str) -> str:
+        """根据二进制包名找到对应的源码包名"""
+        packages = self._parse_sources_file()
+        
+        for source_pkg, pkg_info in packages.items():
+            binary_field = pkg_info.get('Binary', '')
+            if binary_field:
+                binary_packages = [pkg.strip() for pkg in binary_field.split(',')]
+                if binary_package in binary_packages:
+                    return source_pkg
+        
+        # 如果没找到，假设源码包名和二进制包名相同
+        return binary_package
+    
+    def _find_all_dependencies(self, target: str, no_all: str, visited: set = None, depth: int = 0, max_depth: int = 10, target_binary_pkg: str = None) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
         """递归查找所有直接和间接依赖，返回(依赖包信息, 依赖链条)"""
         if visited is None:
             visited = set()
@@ -220,7 +256,17 @@ class PackageDependencyAnalyzer:
             return {}, {}
         
         visited.add(target)
-        dependency_chain = {target: [target]}
+        
+        # 如果target是二进制包，找到对应的源码包
+        if target_binary_pkg is None:
+            # 这是初始调用，target就是源码包
+            target_display = target
+        else:
+            # 这是递归调用，target是二进制包，需要找到源码包
+            source_pkg = self.get_source_package_from_binary(target)
+            target_display = f"{source_pkg}({target})" if source_pkg != target else target
+        
+        dependency_chain = {target: [target_display]}
         all_deps = {}
         
         # 查找直接依赖
@@ -229,21 +275,35 @@ class PackageDependencyAnalyzer:
         
         # 为每个直接依赖建立链条
         for dep_name in direct_deps.keys():
-            dependency_chain[dep_name] = [target, dep_name]
+            dependency_chain[dep_name] = [target_display, dep_name]
         
         # 递归查找间接依赖
         for dep_name in list(direct_deps.keys()):
             if dep_name not in visited:
-                indirect_deps, indirect_chains = self._find_all_dependencies(dep_name, no_all, visited.copy(), depth + 1, max_depth)
+                # 获取这个源码包产生的所有二进制包
+                binary_packages = self.get_binary_packages(dep_name)
                 
-                # 合并间接依赖
-                all_deps.update(indirect_deps)
+                if depth <= 2:  # 只在浅层显示详细信息
+                    print(f"INFO: 源码包 '{dep_name}' 产生 {len(binary_packages)} 个二进制包: {', '.join(binary_packages[:5])}{' ...' if len(binary_packages) > 5 else ''}")
                 
-                # 更新依赖链条
-                for indirect_dep, chain in indirect_chains.items():
-                    if indirect_dep != dep_name:  # 避免自引用
-                        new_chain = [target] + chain
-                        dependency_chain[indirect_dep] = new_chain
+                # 对每个二进制包进行递归分析
+                for binary_pkg in binary_packages:
+                    if binary_pkg not in visited and binary_pkg != target:  # 避免循环依赖
+                        indirect_deps, indirect_chains = self._find_all_dependencies(binary_pkg, no_all, visited.copy(), depth + 1, max_depth, binary_pkg)
+                        
+                        # 合并间接依赖
+                        all_deps.update(indirect_deps)
+                        
+                        # 更新依赖链条
+                        for indirect_dep, chain in indirect_chains.items():
+                            if indirect_dep != dep_name and indirect_dep != binary_pkg:  # 避免自引用
+                                new_chain = [target_display] + chain
+                                if indirect_dep in dependency_chain:
+                                    # 如果已存在，保持较短的链条
+                                    if len(new_chain) < len(dependency_chain[indirect_dep]):
+                                        dependency_chain[indirect_dep] = new_chain
+                                else:
+                                    dependency_chain[indirect_dep] = new_chain
         
         return all_deps, dependency_chain
     
