@@ -1,4 +1,4 @@
-#!/home/revy/rv32_deb/investigation_dependency/package_dependency_analysis/venv/bin/python
+#!/usr/bin/env python3
 """
 Debian Package Dependency Analyzer
 

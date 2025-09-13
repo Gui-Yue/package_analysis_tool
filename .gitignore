@@ -1,4 +1,10 @@
+# Virtual environment
+venv/
+
+# Output directory
 result/
+
+# Python cache
 __pycache__/
 *.pyc
 *.pyo

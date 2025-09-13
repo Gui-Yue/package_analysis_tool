@@ -5,14 +5,25 @@
 ## 环境要求
 
 - Python 3.13+
+- python3-pip
 - 网络连接（用于下载 Sources.xz 文件）
 
 ## 快速开始
 
-工具已经配置完毕，包含所有必需的依赖包，可以直接使用：
-
+### 1. 创建虚拟环境
 ```bash
-./package_dependency_analyzer.py
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 2. 安装依赖
+```bash
+pip install -r requirements.txt
+```
+
+### 3. 运行脚本
+```bash
+python3 package_dependency_analyzer.py
 ```
 
 ## 使用方法
@@ -21,7 +32,7 @@
 
 1. **输入目标包名**: 输入要分析的软件包名称，多个包名用逗号分隔
    ```
-   请输入要分析的目标包名（用逗号分隔）: gcc,python3
+   请输入要分析的目标包名（用逗号分隔）: qt6-webengine-dev,qtwebengine5-dev
    ```
 
 2. **选择过滤选项**: 选择是否过滤纯 `all` 架构的软件包
@@ -53,11 +64,13 @@
 
 ```
 package_dependency_analysis/
-├── package_dependency_analyzer.py  # 主脚本（已配置虚拟环境）
-├── venv/                           # Python 虚拟环境（已包含所有依赖）
+├── package_dependency_analyzer.py  # 主脚本
+├── requirements.txt                # Python 依赖包列表
+├── venv/                           # Python 虚拟环境（用户创建）
 ├── result/                         # 输出目录（运行时自动创建）
 │   ├── Sources                     # 下载的源码包信息文件
 │   └── dependency_analysis_*.xlsx  # 生成的 Excel 报告
+├── .gitignore                      # Git 忽略文件
 └── README.md                       # 本说明文件
 ```
 
@@ -88,7 +101,8 @@ package_dependency_analysis/
 ## 示例运行
 
 ```bash
-$ ./package_dependency_analyzer.py 
+$ source venv/bin/activate
+$ python3 package_dependency_analyzer.py 
 INFO: Initializing environment...
 INFO: Downloading https://mirrors.ustc.edu.cn/debian/dists/trixie/main/source/Sources.xz...
 INFO: Extracting Sources.xz...
@@ -143,8 +157,5 @@ INFO: Analyzing packages that depend on 'cantor'...
 Excel文件已保存到: result/dependency_analysis_qt6-webengine-dev_qtwebengine5-dev_20250913_105841.xlsx
 ```
 
-## 技术说明
-
-- 脚本使用独立的 Python 虚拟环境，避免污染系统 Python 环境
-- 所有必需的依赖包（pandas、openpyxl 等）已预装在虚拟环境中
+## 其他说明
 - 使用中科大镜像源确保国内用户的下载速度
