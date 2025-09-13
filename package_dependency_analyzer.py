@@ -247,156 +247,260 @@ class PackageDependencyAnalyzer:
         # 如果没找到，假设源码包名和二进制包名相同
         return binary_package
     
-    def _find_all_dependencies(self, target: str, no_all: str, visited: set = None, depth: int = 0, max_depth: int = 10, target_binary_pkg: str = None) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
-        """递归查找所有直接和间接依赖，返回(依赖包信息, 依赖链条)"""
-        if visited is None:
-            visited = set()
+    def _find_source_dependencies(self, target_binary: str, no_all: str, visited_sources: set = None, depth: int = 0, max_depth: int = 10) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+        """递归查找所有依赖的源码包（改进版）
         
-        if depth > max_depth or target in visited:
+        Args:
+            target_binary: 目标二进制包名
+            no_all: 是否过滤all架构包
+            visited_sources: 已访问的源码包集合
+            depth: 当前深度
+            max_depth: 最大深度
+            
+        Returns:
+            Tuple[source_deps_info, source_dependency_chains]: (源码包信息, 源码包依赖链条)
+        """
+        if visited_sources is None:
+            visited_sources = set()
+        
+        if depth > max_depth:
             return {}, {}
         
-        visited.add(target)
+        dependency_chain = {}
+        all_source_deps = {}
         
-        # 如果target是二进制包，找到对应的源码包
-        if target_binary_pkg is None:
-            # 这是初始调用，target就是源码包
-            target_display = target
-        else:
-            # 这是递归调用，target是二进制包，需要找到源码包
-            source_pkg = self.get_source_package_from_binary(target)
-            target_display = f"{source_pkg}({target})" if source_pkg != target else target
+        # 查找直接依赖于 target_binary 的所有源码包
+        direct_source_deps = self.analysis(target_binary, no_all)
         
-        dependency_chain = {target: [target_display]}
-        all_deps = {}
+        if depth <= 2:
+            print(f"INFO: 查找依赖于 '{target_binary}' 的源码包: 找到 {len(direct_source_deps)} 个")
         
-        # 查找直接依赖
-        direct_deps = self.analysis(target, no_all)
-        all_deps.update(direct_deps)
-        
-        # 为每个直接依赖建立链条
-        for dep_name in direct_deps.keys():
-            dependency_chain[dep_name] = [target_display, dep_name]
-        
-        # 递归查找间接依赖
-        for dep_name in list(direct_deps.keys()):
-            if dep_name not in visited:
-                # 获取这个源码包产生的所有二进制包
-                binary_packages = self.get_binary_packages(dep_name)
+        # 处理每个直接依赖的源码包
+        for source_pkg in direct_source_deps.keys():
+            if source_pkg in visited_sources:
+                continue
                 
-                if depth <= 2:  # 只在浅层显示详细信息
-                    print(f"INFO: 源码包 '{dep_name}' 产生 {len(binary_packages)} 个二进制包: {', '.join(binary_packages[:5])}{' ...' if len(binary_packages) > 5 else ''}")
-                
-                # 对每个二进制包进行递归分析
-                for binary_pkg in binary_packages:
-                    if binary_pkg not in visited and binary_pkg != target:  # 避免循环依赖
-                        indirect_deps, indirect_chains = self._find_all_dependencies(binary_pkg, no_all, visited.copy(), depth + 1, max_depth, binary_pkg)
-                        
-                        # 合并间接依赖
-                        all_deps.update(indirect_deps)
-                        
-                        # 更新依赖链条
-                        for indirect_dep, chain in indirect_chains.items():
-                            if indirect_dep != dep_name and indirect_dep != binary_pkg:  # 避免自引用
-                                new_chain = [target_display] + chain
-                                if indirect_dep in dependency_chain:
-                                    # 如果已存在，保持较短的链条
-                                    if len(new_chain) < len(dependency_chain[indirect_dep]):
-                                        dependency_chain[indirect_dep] = new_chain
-                                else:
-                                    dependency_chain[indirect_dep] = new_chain
+            visited_sources.add(source_pkg)
+            all_source_deps[source_pkg] = direct_source_deps[source_pkg]
+            dependency_chain[source_pkg] = [source_pkg]  # 初始为源码包本身
+            
+            # 获取这个源码包产生的所有二进制包
+            binary_packages = self.get_binary_packages(source_pkg)
+            
+            if depth <= 2:
+                print(f"INFO: 源码包 '{source_pkg}' 产生 {len(binary_packages)} 个二进制包")
+            
+            # 对该源码包的所有二进制包进行递归分析
+            for binary_pkg in binary_packages:
+                if binary_pkg != target_binary:  # 避免循环
+                    indirect_source_deps, indirect_chains = self._find_source_dependencies(
+                        binary_pkg, no_all, visited_sources.copy(), depth + 1, max_depth
+                    )
+                    
+                    # 合并间接依赖的源码包
+                    for indirect_source, indirect_info in indirect_source_deps.items():
+                        if indirect_source not in all_source_deps:
+                            all_source_deps[indirect_source] = indirect_info
+                            
+                            # 构建依赖链条：当前源码包 -> 间接源码包
+                            if indirect_source in indirect_chains:
+                                dependency_chain[indirect_source] = [source_pkg] + indirect_chains[indirect_source]
+                            else:
+                                dependency_chain[indirect_source] = [source_pkg, indirect_source]
         
-        return all_deps, dependency_chain
+        return all_source_deps, dependency_chain
+    
+    def analyze_source_package_impact(self, source_package: str, no_all: str = "yes") -> Dict[str, Dict[str, any]]:
+        """分析源码包构建成功后的影响（源码包模式）
+        
+        Args:
+            source_package: 源码包名
+            no_all: 是否过滤all架构包
+            
+        Returns:
+            Dict: 受影响的源码包信息，包含依赖链条
+        """
+        print(f"\n分析源码包: {source_package}")
+        print("=" * 50)
+        
+        # 获取该源码包产生的所有二进制包
+        binary_packages = self.get_binary_packages(source_package)
+        
+        if not binary_packages:
+            print(f"WARNING: 源码包 '{source_package}' 不存在或没有二进制包")
+            return {}
+        
+        print(f"INFO: 源码包 '{source_package}' 产生 {len(binary_packages)} 个二进制包: {', '.join(binary_packages)}")
+        
+        # 对每个二进制包进行依赖分析
+        all_affected_sources = {}
+        
+        for binary_pkg in binary_packages:
+            print(f"\n分析二进制包: {binary_pkg}")
+            print("-" * 30)
+            
+            # 查找依赖于该二进制包的源码包
+            source_deps, source_chains = self._find_source_dependencies(binary_pkg, no_all, max_depth=5)
+            
+            print(f"找到 {len(source_deps)} 个依赖的源码包")
+            
+            # 处理每个受影响的源码包
+            for affected_source, chain in source_chains.items():
+                # 构建以源码包开头的依赖链条
+                full_chain = f"{source_package} -> {' -> '.join(chain)}"
+                
+                if affected_source in all_affected_sources:
+                    # 如果已存在，添加新的依赖链条
+                    if full_chain not in all_affected_sources[affected_source]['chains']:
+                        all_affected_sources[affected_source]['chains'].append(full_chain)
+                else:
+                    # 新的受影响源码包
+                    pkg_info = self.package_info(affected_source)
+                    all_affected_sources[affected_source] = {
+                        'info': source_deps[affected_source],
+                        'category': pkg_info['category'],
+                        'arch': pkg_info['arch'],
+                        'homepage': pkg_info['homepage'],
+                        'chains': [full_chain]
+                    }
+                
+                print(f"  {affected_source}: {source_package} -> {' -> '.join(chain)}")
+        
+        return all_affected_sources
     
     def main(self):
-        """主流程控制"""
+        """主流程控制（支持二进制包和源码包模式）"""
         # 第一步：初始化环境
         self.init()
         
-        # 第二步：接收目标包列表
-        target_input = input("请输入要分析的目标包名（用逗号分隔）: ").strip()
+        # 第二步：选择分析模式
+        print("请选择分析模式:")
+        print("1. 二进制包模式 - 以具体的二进制包为目标")
+        print("2. 源码包模式 - 以源码包为目标，分析整个源码包的影响")
+        
+        mode_input = input("请输入模式编号 (1 或 2, 默认1): ").strip()
+        if mode_input == "2":
+            return self._main_source_mode()
+        else:
+            return self._main_binary_mode()
+    
+    def _main_binary_mode(self):
+        """二进制包模式的主流程"""
+        print("\n=== 二进制包模式 ===")
+        
+        # 接收目标包列表
+        target_input = input("请输入要分析的目标二进制包名（用逗号分隔）: ").strip()
         target_list = [t.strip() for t in target_input.split(',') if t.strip()]
         
         if not target_list:
             print("ERROR: 未提供有效的目标包名")
             return
         
-        # 第三步：接收过滤选项
+        # 接收过滤选项
         filter_input = input("是否过滤纯all包？(yes/no，默认yes): ").strip()
         if not filter_input:
             filter_input = "yes"
         
-        # 第四步：分析每个目标包
-        final_dep_packages_list = []
+        # 分析每个目标包（源码包级别）
+        final_source_deps = {}
         
         for target in target_list:
-            print(f"\n分析目标包: {target}")
+            print(f"\n分析目标二进制包: {target}")
             print("=" * 50)
             
-            # 查找所有依赖（直接和间接）
-            all_deps, dependency_chains = self._find_all_dependencies(target, filter_input)
+            # 查承所有依赖的源码包
+            source_deps, source_chains = self._find_source_dependencies(target, filter_input)
             
-            # 构建结果字典
-            result = {}
-            for pkg_name, chain in dependency_chains.items():
-                if pkg_name != target:  # 排除目标包自身
-                    result[pkg_name] = chain
+            print(f"找到 {len(source_deps)} 个依赖的源码包")
             
-            final_dep_packages_list.append(result)
-            
-            print(f"找到 {len(result)} 个依赖包")
-            
-            # 显示所有结果
-            for pkg, chain in result.items():
-                print(f"  {pkg}: {' -> '.join(chain)}")
-        
-        # 第五步：合并所有结果并处理重复包
-        print(f"\n开始合并结果...")
-        merged_dependencies = {}
-        
-        for result_dict in final_dep_packages_list:
-            for pkg_name, chain in result_dict.items():
-                if pkg_name in merged_dependencies:
-                    # 如果包已存在，合并依赖链条
-                    existing_chains = merged_dependencies[pkg_name]
-                    chain_str = ' -> '.join(chain)
-                    if chain_str not in existing_chains:
-                        existing_chains.append(chain_str)
+            # 显示结果
+            for source_pkg, chain in source_chains.items():
+                print(f"  {source_pkg}: {' -> '.join(chain)}")
+                
+                # 合并到最终结果中
+                if source_pkg in final_source_deps:
+                    # 如果已存在，添加新的依赖链条
+                    chain_str = f"{target} -> {' -> '.join(chain)}"
+                    if chain_str not in final_source_deps[source_pkg]['chains']:
+                        final_source_deps[source_pkg]['chains'].append(chain_str)
                 else:
-                    # 新包，添加依赖链条
-                    merged_dependencies[pkg_name] = [' -> '.join(chain)]
+                    # 新源码包
+                    pkg_info = self.package_info(source_pkg)
+                    final_source_deps[source_pkg] = {
+                        'info': source_deps[source_pkg],
+                        'category': pkg_info['category'],
+                        'arch': pkg_info['arch'],
+                        'homepage': pkg_info['homepage'],
+                        'chains': [f"{target} -> {' -> '.join(chain)}"]
+                    }
         
-        # 第六步：生成comprehensive_result
-        print(f"正在获取包的详细信息...")
-        comprehensive_result = {}
+        return self._output_results(final_source_deps, target_list, "二进制包")
+    
+    def _main_source_mode(self):
+        """源码包模式的主流程"""
+        print("\n=== 源码包模式 ===")
         
-        for pkg_name, chains in merged_dependencies.items():
-            pkg_info = self.package_info(pkg_name)
-            comprehensive_result[pkg_name] = {
-                'category': pkg_info['category'],
-                'arch': pkg_info['arch'],
-                'homepage': pkg_info['homepage'],
-                'dependency_chain': ','.join(chains)
-            }
+        # 接收目标源码包列表
+        target_input = input("请输入要分析的目标源码包名（用逗号分隔）: ").strip()
+        target_list = [t.strip() for t in target_input.split(',') if t.strip()]
         
-        # 第七步：输出最终结果
+        if not target_list:
+            print("ERROR: 未提供有效的目标源码包名")
+            return
+        
+        # 接收过滤选项
+        filter_input = input("是否过滤纯all包？(yes/no，默认yes): ").strip()
+        if not filter_input:
+            filter_input = "yes"
+        
+        # 分析每个目标源码包
+        final_source_deps = {}
+        
+        for source_package in target_list:
+            affected_sources = self.analyze_source_package_impact(source_package, filter_input)
+            
+            # 合并结果
+            for source_pkg, data in affected_sources.items():
+                if source_pkg in final_source_deps:
+                    # 合并依赖链条
+                    for chain in data['chains']:
+                        if chain not in final_source_deps[source_pkg]['chains']:
+                            final_source_deps[source_pkg]['chains'].append(chain)
+                else:
+                    final_source_deps[source_pkg] = data
+        
+        return self._output_results(final_source_deps, target_list, "源码包")
+    
+    def _output_results(self, final_source_deps: dict, target_list: list, mode_name: str):
+        """输出最终结果"""
         print(f"\n分析完成！")
-        print(f"共分析了 {len(target_list)} 个目标包")
-        print(f"找到 {len(comprehensive_result)} 个唯一的依赖包")
-        print("\n综合结果:")
+        print(f"共分析了 {len(target_list)} 个目标{mode_name}")
+        print(f"找到 {len(final_source_deps)} 个唯一的受影响源码包")
+        print(f"\n源码包依赖结果 ({mode_name}模式):")
         print("=" * 80)
         
-        for pkg_name, info in comprehensive_result.items():
-            print(f"包名: {pkg_name}")
-            print(f"  分类: {info['category']}")
-            print(f"  架构: {info['arch']}")
-            print(f"  主页: {info['homepage']}")
-            print(f"  依赖链: {info['dependency_chain']}")
+        # 准备导出数据
+        comprehensive_result = {}
+        for source_pkg, data in final_source_deps.items():
+            print(f"源码包: {source_pkg}")
+            print(f"  分类: {data['category']}")
+            print(f"  架构: {data['arch']}")
+            print(f"  主页: {data['homepage']}")
+            print(f"  依赖链条: {'; '.join(data['chains'])}")
             print("-" * 40)
+            
+            comprehensive_result[source_pkg] = {
+                'category': data['category'],
+                'arch': data['arch'],
+                'homepage': data['homepage'],
+                'dependency_chain': '; '.join(data['chains'])
+            }
         
-        # 第八步：导出到Excel
-        print(f"\n正在导出结果到Excel...")
-        excel_filepath = self.export_to_excel(comprehensive_result, target_list)
-        print(f"Excel文件已保存到: {excel_filepath}")
+        # 导出到Excel
+        if comprehensive_result:
+            print(f"\n正在导出结果到Excel...")
+            excel_filepath = self.export_to_excel(comprehensive_result, target_list)
+            print(f"Excel文件已保存到: {excel_filepath}")
         
         return comprehensive_result
 
